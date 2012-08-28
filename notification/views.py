@@ -4,11 +4,52 @@ from django.http import HttpResponseRedirect, Http404
 from django.template import RequestContext
 
 from django.contrib.auth.decorators import login_required
-from django.contrib.syndication.views import feed
 
 from notification.models import *
 from notification.decorators import basic_auth_required, simple_basic_auth_callback
 from notification.feeds import NoticeUserFeed
+
+def feed(request, url, feed_dict=None):
+    """Provided for backwards compatibility."""
+    from django.contrib.syndication.feeds import Feed as LegacyFeed
+    import warnings
+    warnings.warn('The syndication feed() view is deprecated. Please use the '
+                  'new class based view API.',
+                  category=PendingDeprecationWarning)
+
+    if not feed_dict:
+        raise Http404("No feeds are registered.")
+
+    try:
+        slug, param = url.split('/', 1)
+    except ValueError:
+        slug, param = url, ''
+
+    try:
+        f = feed_dict[slug]
+    except KeyError:
+        raise Http404("Slug %r isn't registered." % slug)
+
+    # Backwards compatibility within the backwards compatibility;
+    # Feeds can be updated to be class-based, but still be deployed
+    # using the legacy feed view. This only works if the feed takes
+    # no arguments (i.e., get_object returns None). Refs #14176.
+    if not issubclass(f, LegacyFeed):
+        instance = f()
+        instance.feed_url = getattr(f, 'feed_url', None) or request.path
+        instance.title_template = f.title_template or ('feeds/%s_title.html' % slug)
+        instance.description_template = f.description_template or ('feeds/%s_description.html' % slug)
+
+        return instance(request)
+
+    try:
+        feedgen = f(slug, request).get_feed(param)
+    except FeedDoesNotExist:
+        raise Http404("Invalid feed parameters. Slug %r is valid, but other parameters, or lack thereof, are not." % slug)
+
+    response = HttpResponse(mimetype=feedgen.mime_type)
+    feedgen.write(response, 'utf-8')
+    return response
 
 
 @basic_auth_required(realm="Notices Feed", callback_func=simple_basic_auth_callback)
@@ -26,17 +67,17 @@ def feed_for_user(request):
 def notices(request):
     """
     The main notices index view.
-    
+
     Template: :template:`notification/notices.html`
-    
+
     Context:
-    
+
         notices
             A list of :model:`notification.Notice` objects that are not archived
             and to be displayed on the site.
     """
     notices = Notice.objects.notices_for(request.user, on_site=True)
-    
+
     return render_to_response("notification/notices.html", {
         "notices": notices,
     }, context_instance=RequestContext(request))
@@ -46,14 +87,14 @@ def notices(request):
 def notice_settings(request):
     """
     The notice settings view.
-    
+
     Template: :template:`notification/notice_settings.html`
-    
+
     Context:
-        
+
         notice_types
             A list of all :model:`notification.NoticeType` objects.
-        
+
         notice_settings
             A dictionary containing ``column_headers`` for each ``NOTICE_MEDIA``
             and ``rows`` containing a list of dictionaries: ``notice_type``, a
@@ -80,16 +121,16 @@ def notice_settings(request):
                         setting.save()
             settings_row.append((form_label, setting.send))
         settings_table.append({"notice_type": notice_type, "cells": settings_row})
-    
+
     if request.method == "POST":
         next_page = request.POST.get("next_page", ".")
         return HttpResponseRedirect(next_page)
-    
+
     notice_settings = {
         "column_headers": [medium_display for medium_id, medium_display in NOTICE_MEDIA],
         "rows": settings_table,
     }
-    
+
     return render_to_response("notification/notice_settings.html", {
         "notice_types": notice_types,
         "notice_settings": notice_settings,
@@ -100,16 +141,16 @@ def notice_settings(request):
 def single(request, id, mark_seen=True):
     """
     Detail view for a single :model:`notification.Notice`.
-    
+
     Template: :template:`notification/single.html`
-    
+
     Context:
-    
+
         notice
             The :model:`notification.Notice` being viewed
-    
+
     Optional arguments:
-    
+
         mark_seen
             If ``True``, mark the notice as seen if it isn't
             already.  Do nothing if ``False``.  Default: ``True``.
@@ -131,12 +172,12 @@ def archive(request, noticeid=None, next_page=None):
     Archive a :model:`notices.Notice` if the requesting user is the
     recipient or if the user is a superuser.  Returns a
     ``HttpResponseRedirect`` when complete.
-    
+
     Optional arguments:
-    
+
         noticeid
             The ID of the :model:`notices.Notice` to be archived.
-        
+
         next_page
             The page to redirect to when done.
     """
@@ -159,12 +200,12 @@ def delete(request, noticeid=None, next_page=None):
     Delete a :model:`notices.Notice` if the requesting user is the recipient
     or if the user is a superuser.  Returns a ``HttpResponseRedirect`` when
     complete.
-    
+
     Optional arguments:
-    
+
         noticeid
             The ID of the :model:`notices.Notice` to be archived.
-        
+
         next_page
             The page to redirect to when done.
     """
@@ -185,9 +226,9 @@ def delete(request, noticeid=None, next_page=None):
 def mark_all_seen(request):
     """
     Mark all unseen notices for the requesting user as seen.  Returns a
-    ``HttpResponseRedirect`` when complete. 
+    ``HttpResponseRedirect`` when complete.
     """
-    
+
     for notice in Notice.objects.notices_for(request.user, unseen=True):
         notice.unseen = False
         notice.save()
